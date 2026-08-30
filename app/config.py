@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     turso_database_url: str | None = None
     turso_auth_token: str | None = None
 
+    # Faqat birinchi adminni tayinlash uchun (Shell kirish yo'q platformalarda,
+    # masalan Render Free tarifida, foydali). Ishlatib bo'lgach, .env'dan
+    # olib tashlashingiz yoki qiymatini o'zgartirishingiz mumkin.
+    setup_secret: str | None = None
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     @property
