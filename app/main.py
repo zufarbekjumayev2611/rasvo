@@ -9,6 +9,7 @@ from .config import settings
 from .courses import router as courses_router
 from .turso_admin import router as turso_router
 from .student_detail import router as student_detail_router
+from .setup import router as setup_router
 from .database import Base, engine
 
 Base.metadata.create_all(bind=engine)
@@ -40,6 +41,7 @@ app.include_router(auth_router)
 app.include_router(courses_router)
 app.include_router(turso_router)
 app.include_router(student_detail_router)
+app.include_router(setup_router)
 
 
 @app.get("/health")
