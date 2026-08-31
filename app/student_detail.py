@@ -1,12 +1,31 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from . import models, schemas
-from .database import get_db
 from .deps import require_admin
 from .turso_client import query_turso, TursoNotConfigured
 
 router = APIRouter(tags=["student-detail"])
+
+_notes_table_ready = False
+
+
+async def _ensure_notes_table():
+    """Turso'da 'admin_notes' jadvali mavjudligini ta'minlaydi (bir marta,
+    keyingi so'rovlarda qayta tekshirilmaydi)."""
+    global _notes_table_ready
+    if _notes_table_ready:
+        return
+    await query_turso(
+        "CREATE TABLE IF NOT EXISTS admin_notes ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "telegram_id INTEGER NOT NULL, "
+        "author_name TEXT NOT NULL, "
+        "note TEXT NOT NULL, "
+        "created_at TEXT NOT NULL)"
+    )
+    _notes_table_ready = True
 
 
 @router.get("/admin/students/{telegram_id}/detail")
@@ -52,33 +71,46 @@ async def student_detail(telegram_id: int, _admin: models.User = Depends(require
         return {"test_results": [], "aplus_results": [], "attendance": []}
 
 
-@router.get("/admin/students/{telegram_id}/notes", response_model=list[schemas.NoteOut])
-def list_notes(
+@router.get("/admin/students/{telegram_id}/notes")
+async def list_notes(
     telegram_id: int,
-    db: Session = Depends(get_db),
     _admin: models.User = Depends(require_admin),
 ):
-    return (
-        db.query(models.StudentNote)
-        .filter(models.StudentNote.telegram_id == telegram_id)
-        .order_by(models.StudentNote.created_at.desc())
-        .all()
-    )
+    """
+    Bu o'quvchi haqidagi barcha izohlarni Turso'dan o'qiydi
+    ('admin_notes' jadvali — botning jadvallaridan alohida, faqat
+    admin panel ishlatadi).
+    """
+    try:
+        await _ensure_notes_table()
+        return await query_turso(
+            "SELECT id, telegram_id, author_name, note, created_at "
+            "FROM admin_notes WHERE telegram_id = ? ORDER BY created_at DESC",
+            (telegram_id,),
+        )
+    except TursoNotConfigured as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
 
 
-@router.post("/admin/students/{telegram_id}/notes", response_model=schemas.NoteOut, status_code=201)
-def add_note(
+@router.post("/admin/students/{telegram_id}/notes", status_code=201)
+async def add_note(
     telegram_id: int,
     payload: schemas.NoteCreate,
-    db: Session = Depends(get_db),
     admin: models.User = Depends(require_admin),
 ):
-    note = models.StudentNote(
-        telegram_id=telegram_id,
-        author_name=admin.full_name,
-        note=payload.note,
-    )
-    db.add(note)
-    db.commit()
-    db.refresh(note)
-    return note
+    try:
+        await _ensure_notes_table()
+        created_at = datetime.now(timezone.utc).isoformat()
+        await query_turso(
+            "INSERT INTO admin_notes (telegram_id, author_name, note, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (telegram_id, admin.full_name, payload.note, created_at),
+        )
+        return {
+            "telegram_id": telegram_id,
+            "author_name": admin.full_name,
+            "note": payload.note,
+            "created_at": created_at,
+        }
+    except TursoNotConfigured as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
