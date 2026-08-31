@@ -1,10 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
-from . import models
 from .config import settings
-from .database import get_db
+from .turso_client import query_turso, ensure_admins_table, TursoNotConfigured
 
 router = APIRouter(tags=["setup"])
 
@@ -15,7 +13,7 @@ class PromoteRequest(BaseModel):
 
 
 @router.post("/setup/promote-admin")
-def promote_admin(payload: PromoteRequest, db: Session = Depends(get_db)):
+async def promote_admin(payload: PromoteRequest):
     """
     Shell/SSH kirish imkoni bo'lmagan platformalarda (masalan Render Free
     tarifi) birinchi admin hisobni tayinlash uchun. SETUP_SECRET .env'da
@@ -32,13 +30,21 @@ def promote_admin(payload: PromoteRequest, db: Session = Depends(get_db)):
             detail="Noto'g'ri maxfiy kalit",
         )
 
-    user = db.query(models.User).filter(models.User.phone == payload.phone).first()
-    if user is None:
+    try:
+        await ensure_admins_table()
+        rows = await query_turso(
+            "SELECT id, full_name FROM backend_admins WHERE phone = ?", (payload.phone,)
+        )
+    except TursoNotConfigured as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+
+    if not rows:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"{payload.phone} raqamli foydalanuvchi topilmadi",
         )
 
-    user.role = models.UserRole.admin
-    db.commit()
-    return {"detail": f"{user.full_name} ({user.phone}) endi admin."}
+    await query_turso(
+        "UPDATE backend_admins SET role = 'admin' WHERE phone = ?", (payload.phone,)
+    )
+    return {"detail": f"{rows[0]['full_name']} ({payload.phone}) endi admin."}
