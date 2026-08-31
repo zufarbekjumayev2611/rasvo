@@ -1,10 +1,11 @@
+from datetime import datetime
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
 
 from . import models
-from .database import get_db
 from .security import decode_access_token
+from .turso_client import query_turso, ensure_admins_table, TursoNotConfigured
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -15,19 +16,38 @@ CREDENTIALS_ERROR = HTTPException(
 )
 
 
-def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
-) -> models.User:
+def row_to_user(row: dict) -> models.User:
+    """Turso'dan kelgan qatorni models.User obyektiga aylantiradi
+    (ma'lumotlar bazasiga yozmasdan, faqat xotirada — attributlarga
+    kirish uchun)."""
+    return models.User(
+        id=row["id"],
+        full_name=row["full_name"],
+        phone=row["phone"],
+        password_hash=row["password_hash"],
+        role=models.UserRole(row["role"]),
+        region=row.get("region"),
+        district=row.get("district"),
+        is_active=bool(row["is_active"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> models.User:
     phone = decode_access_token(token)
     if phone is None:
         raise CREDENTIALS_ERROR
 
-    user = db.query(models.User).filter(models.User.phone == phone).first()
-    if user is None or not user.is_active:
+    try:
+        await ensure_admins_table()
+        rows = await query_turso("SELECT * FROM backend_admins WHERE phone = ?", (phone,))
+    except TursoNotConfigured:
         raise CREDENTIALS_ERROR
 
-    return user
+    if not rows or not rows[0]["is_active"]:
+        raise CREDENTIALS_ERROR
+
+    return row_to_user(rows[0])
 
 
 def require_admin(current_user: models.User = Depends(get_current_user)) -> models.User:
