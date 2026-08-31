@@ -34,3 +34,31 @@ async def query_turso(sql: str, params: tuple = ()) -> list[dict]:
         return [dict(zip(columns, row)) for row in result.rows]
     finally:
         await client.close()
+
+
+_admins_table_ready = False
+
+
+async def ensure_admins_table():
+    """
+    Sayt/admin panel uchun login hisoblari saqlanadigan 'backend_admins'
+    jadvali Turso'da mavjudligini ta'minlaydi (bir marta yaratiladi).
+    Botning o'z 'users' jadvalidan ATAYLAB alohida nom bilan — ikkalasi
+    bir-biriga aralashmasin, sxemasi ham boshqacha.
+    """
+    global _admins_table_ready
+    if _admins_table_ready:
+        return
+    await query_turso(
+        "CREATE TABLE IF NOT EXISTS backend_admins ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "full_name TEXT NOT NULL, "
+        "phone TEXT NOT NULL UNIQUE, "
+        "password_hash TEXT NOT NULL, "
+        "role TEXT NOT NULL, "
+        "region TEXT, "
+        "district TEXT, "
+        "is_active INTEGER NOT NULL DEFAULT 1, "
+        "created_at TEXT NOT NULL)"
+    )
+    _admins_table_ready = True
