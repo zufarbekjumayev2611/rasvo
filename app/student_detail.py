@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from . import models, schemas
 from .deps import require_admin
@@ -28,47 +28,76 @@ async def _ensure_notes_table():
     _notes_table_ready = True
 
 
-@router.get("/admin/students/{telegram_id}/detail")
-async def student_detail(telegram_id: int, _admin: models.User = Depends(require_admin)):
-    """
-    Bitta o'quvchi haqida ma'lumot: oddiy testlar, A+ testlar, davomat.
-    Hammasi Turso'dan (faqat o'qish).
-
-    Eslatma: 'score_adjustments' (ball tuzatishlari) ATAYLAB bu yerga
-    qo'shilmagan — bu ma'lumot maxfiy va faqat cofounderlar uchun,
-    oddiy admin panelida umuman ko'rsatilmaydi.
-    """
+@router.get("/admin/students/{telegram_id}/tests")
+async def student_tests(
+    telegram_id: int,
+    limit: int = Query(3, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+    _admin: models.User = Depends(require_admin),
+):
+    """Oddiy testlar natijalari, sahifalab."""
     try:
-        test_results = await query_turso(
+        total_rows = await query_turso(
+            "SELECT COUNT(*) AS cnt FROM test_submissions WHERE telegram_id = ?", (telegram_id,)
+        )
+        total = total_rows[0]["cnt"] if total_rows else 0
+        items = await query_turso(
             "SELECT t.name AS test_name, t.total_questions, ts.score, ts.submitted_at "
             "FROM test_submissions ts JOIN tests t ON ts.test_id = t.id "
-            "WHERE ts.telegram_id = ? ORDER BY ts.submitted_at DESC",
-            (telegram_id,),
+            "WHERE ts.telegram_id = ? ORDER BY ts.submitted_at DESC LIMIT ? OFFSET ?",
+            (telegram_id, limit, offset),
         )
+        return {"items": items, "total": total}
+    except TursoNotConfigured as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
 
-        aplus_results = await query_turso(
+
+@router.get("/admin/students/{telegram_id}/aplus")
+async def student_aplus(
+    telegram_id: int,
+    limit: int = Query(3, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+    _admin: models.User = Depends(require_admin),
+):
+    """A+ testlar natijalari, sahifalab."""
+    try:
+        total_rows = await query_turso(
+            "SELECT COUNT(*) AS cnt FROM aplus_submissions WHERE telegram_id = ?", (telegram_id,)
+        )
+        total = total_rows[0]["cnt"] if total_rows else 0
+        items = await query_turso(
             "SELECT at.name AS test_name, at.question_count, aps.score, aps.submitted_at "
             "FROM aplus_submissions aps JOIN aplus_tests at ON aps.test_id = at.id "
-            "WHERE aps.telegram_id = ? ORDER BY aps.submitted_at DESC",
-            (telegram_id,),
+            "WHERE aps.telegram_id = ? ORDER BY aps.submitted_at DESC LIMIT ? OFFSET ?",
+            (telegram_id, limit, offset),
         )
+        return {"items": items, "total": total}
+    except TursoNotConfigured as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
 
-        attendance = await query_turso(
+
+@router.get("/admin/students/{telegram_id}/attendance")
+async def student_attendance(
+    telegram_id: int,
+    limit: int = Query(3, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+    _admin: models.User = Depends(require_admin),
+):
+    """Davomat (har bir sessiyada qatnashdi/qatnashmadi), sahifalab."""
+    try:
+        total_rows = await query_turso("SELECT COUNT(*) AS cnt FROM attendance_sessions")
+        total = total_rows[0]["cnt"] if total_rows else 0
+        items = await query_turso(
             "SELECT s.id AS session_id, s.code, s.created_at, "
             "CASE WHEN r.telegram_id IS NOT NULL THEN 1 ELSE 0 END AS attended "
             "FROM attendance_sessions s "
             "LEFT JOIN attendance_records r ON r.session_id = s.id AND r.telegram_id = ? "
-            "ORDER BY s.created_at DESC",
-            (telegram_id,),
+            "ORDER BY s.created_at DESC LIMIT ? OFFSET ?",
+            (telegram_id, limit, offset),
         )
-
-        return {
-            "test_results": test_results,
-            "aplus_results": aplus_results,
-            "attendance": attendance,
-        }
-    except TursoNotConfigured:
-        return {"test_results": [], "aplus_results": [], "attendance": []}
+        return {"items": items, "total": total}
+    except TursoNotConfigured as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
 
 
 @router.get("/admin/students/{telegram_id}/notes")
@@ -76,11 +105,7 @@ async def list_notes(
     telegram_id: int,
     _admin: models.User = Depends(require_admin),
 ):
-    """
-    Bu o'quvchi haqidagi barcha izohlarni Turso'dan o'qiydi
-    ('admin_notes' jadvali — botning jadvallaridan alohida, faqat
-    admin panel ishlatadi).
-    """
+    """Bu o'quvchi haqidagi barcha izohlarni Turso'dan o'qiydi."""
     try:
         await _ensure_notes_table()
         return await query_turso(
