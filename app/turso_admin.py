@@ -13,6 +13,8 @@ async def list_students(
     offset: int = Query(0, ge=0),
     search: str | None = Query(None),
     missed_last_session: bool = Query(False),
+    sort: str | None = Query(None),
+    oldest_first: bool = Query(False),
     _admin: models.User = Depends(require_admin),
 ):
     """
@@ -22,6 +24,11 @@ async def list_students(
     - search: ism/familiya bo'yicha qidiradi (katta-kichik harf farqi yo'q)
     - missed_last_session: True bo'lsa, faqat ENG OXIRGI davomat sessiyasida
       qatnashmagan o'quvchilarni qaytaradi
+    - sort=homework_missed_desc: testlarni (oddiy + A+) umuman ishlamaganlar
+      birinchi, keyin eng kam ishlaganlar; teng bo'lsa yangi ro'yxatdan o'tgani oldin.
+      oldest_first=true: ro'yxatdan o'tish bo'yicha teskari tartib (eskilari birinchi,
+      sort bilan birga ishlatilsa, teng natijalar ichida ham shu tartib saqlanadi).
+      Har bir o'quvchi uchun `tests_done` (ishlangan testlar soni) ham qaytadi.
     """
     try:
         where_clauses = []
@@ -49,9 +56,24 @@ async def list_students(
         total_rows = await query_turso(f"SELECT COUNT(*) AS cnt FROM users {where_sql}", tuple(params))
         total = total_rows[0]["cnt"] if total_rows else 0
 
+        # Ishlangan testlar soni: har bir jadval bitta GROUP BY orqali hisoblanadi
+        # (har o'quvchi uchun alohida so'rov emas) - panel tez ishlashi uchun.
+        reg_order = "u.registered_at ASC" if oldest_first else "u.registered_at DESC"
+        order_sql = reg_order
+        if sort == "homework_missed_desc":
+            order_sql = f"tests_done ASC, {reg_order}"
+
         items = await query_turso(
-            f"SELECT telegram_id, full_name, course, region, district, phone, registered_at, role "
-            f"FROM users {where_sql} ORDER BY registered_at DESC LIMIT ? OFFSET ?",
+            "SELECT u.telegram_id, u.full_name, u.course, u.region, u.district, u.phone, "
+            "u.registered_at, u.role, "
+            "COALESCE(t.cnt, 0) + COALESCE(a.cnt, 0) AS tests_done "
+            "FROM users u "
+            "LEFT JOIN (SELECT telegram_id, COUNT(*) AS cnt FROM test_submissions GROUP BY telegram_id) t "
+            "ON t.telegram_id = u.telegram_id "
+            "LEFT JOIN (SELECT telegram_id, COUNT(*) AS cnt FROM aplus_submissions GROUP BY telegram_id) a "
+            "ON a.telegram_id = u.telegram_id "
+            f"{where_sql.replace('full_name', 'u.full_name').replace('telegram_id NOT IN', 'u.telegram_id NOT IN')} "
+            f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
             tuple(params) + (limit, offset),
         )
         return {"items": items, "total": total}
